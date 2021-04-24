@@ -49,6 +49,60 @@ def my_ha(plateifu, min_snr=3, max_radii=1.5):
     snr_map = ha.snr
     return masked_lumi, snr_map, er.value
 
+def my_hb(plateifu, min_snr=3, max_radii=1.5):
+    '''
+    get my own H Beta emission map in numpy.ma.array instance within minimum SNR and maximum effective readius. 
+    Then convert it to Luminosity (erg /s /arcsec^2)
+    '''
+    maps = Maps(plateifu=plateifu)
+    hb = maps.emline_gflux_hb_4862
+    er = maps.spx_ellcoo_r_re
+    z = maps.nsa['z']
+    drpall_mask = hb.pixmask.get_mask(['DONOTUSE', 'UNRELIABLE', 'NOCOV'],
+                                      dtype=bool)
+    snr_mask = (hb.snr < min_snr) + drpall_mask
+    radii_mask = (er.value > max_radii) + drpall_mask
+    my_hb = np.ma.array(hb.data, mask=snr_mask + radii_mask)
+    dl = get_dl(z)
+    masked_lumi = my_hb * 1e-17 * 4 * math.pi * (dl**2) / 0.25
+    snr_map = hb.snr
+    return masked_lumi, snr_map, er.value
+
+def sfr(plateifu, min_snr=3, max_radii=1.5):
+    ha, snr_map_ha, er_map = my_ha(plateifu,min_snr,max_radii)
+    hb, snr_map_hb, er_map = my_hb(plateifu,min_snr,max_radii)
+    ext_factor=((ha/hb)/2.8)**2.36
+    ha_cor = ha*ext_factor
+    sfr = ha_cor/(10**41.1)
+    return sfr , snr_map_ha, er_map
+
+def asy(plateifu, min_snr=3, max_radii=1.5):
+    image, snr_map, er_map = sfr(plateifu, min_snr, max_radii)
+    center = np.unravel_index(np.argmin(er_map), er_map.shape)
+    w = er_map.shape[0]  # width of image
+    h = er_map.shape[1]  # hieght of image
+    u = center[0]  # row index of center
+    v = center[1]  # col index of center
+    print(str(u) + ',' + str(v))
+    if w / u == 2 and h / v == 2:  # 对于中心在矩阵中间的图简单处理
+        new_image = image[1:, 1:]  # 删除index为0的列和行
+        new_image_rot = new_image[::-1, ::-1]
+        dif = new_image - new_image_rot
+        A = np.ma.sum(abs(dif)) / (2 * np.ma.sum(dif + new_image_rot))
+    else:
+        new_image = image
+        if w / u > 2:
+            new_image = new_image[0:2 * u + 1, :]
+        else:
+            new_image = new_image[2 * u - w + 1:w, :]
+        if h / v > 2:
+            new_image = new_image[:, 0:2 * v + 1]
+        else:
+            new_image = new_image[:, 2 * v - h + 1:h]
+        new_image_rot = new_image[::-1, ::-1]
+        dif = new_image - new_image_rot
+        A = np.ma.sum(abs(dif)) / (2 * np.ma.sum(dif + new_image_rot))
+    return A
 
 def get_lead_trail(plateifu, angle, min_snr=3, max_radii=1.5):
     '''
@@ -58,7 +112,7 @@ def get_lead_trail(plateifu, angle, min_snr=3, max_radii=1.5):
     Center is the center of galaxy, should be a numpy.array
     can be get by (np.unravel_index(np.argmin(effective_radius), er.shape))
     '''
-    image, snr_map, er_map = my_ha(plateifu, min_snr, max_radii)
+    image, snr_map, er_map = sfr(plateifu, min_snr, max_radii)
     whole_mask = image.mask
     center = np.unravel_index(
         np.argmin(er_map),
@@ -102,36 +156,7 @@ def get_lead_trail(plateifu, angle, min_snr=3, max_radii=1.5):
     return leading, trailing, snr_map, A
 
 
-def asy(plateifu, min_snr=3, max_radii=1.5):
-    '''
-    calculate the asymmetry
-    '''
-    image, snr_map, er_map = my_ha(plateifu, min_snr, max_radii)
-    center = np.unravel_index(np.argmin(er_map), er_map.shape)
-    w = er_map.shape[0]  # width of image
-    h = er_map.shape[1]  # hieght of image
-    u = center[0]  # row index of center
-    v = center[1]  # col index of center
-    print(str(u) + ',' + str(v))
-    if w / u == 2 and h / v == 2:  # 对于中心在矩阵中间的图简单处理
-        new_image = image[1:, 1:]  # 删除index为0的列和行
-        new_image_rot = new_image[::-1, ::-1]
-        dif = new_image - new_image_rot
-        A = np.ma.sum(abs(dif)) / (2 * np.ma.sum(dif + new_image_rot))
-    else:
-        new_image = image
-        if w / u > 2:
-            new_image = new_image[0:2 * u + 1, :]
-        else:
-            new_image = new_image[2 * u - w + 1:w, :]
-        if h / v > 2:
-            new_image = new_image[:, 0:2 * v + 1]
-        else:
-            new_image = new_image[:, 2 * v - h + 1:h]
-        new_image_rot = new_image[::-1, ::-1]
-        dif = new_image - new_image_rot
-        A = np.ma.sum(abs(dif)) / (2 * np.ma.sum(dif + new_image_rot))
-    return A
+
 
 
 def stat(plateifu, angle, min_snr=3, max_radii=1.5):
