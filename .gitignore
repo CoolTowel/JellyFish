@@ -1,0 +1,10 @@
+__pycache__/
+.vscode/
+
+bpt/
+data/
+stat/
+direction/
+*.png
+*.pdf
+.DS_Store
