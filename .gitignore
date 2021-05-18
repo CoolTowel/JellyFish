@@ -8,3 +8,4 @@ direction/
 *.png
 *.pdf
 .DS_Store
+tests.py
