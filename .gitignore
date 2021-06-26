@@ -1,9 +1,12 @@
 __pycache__/
 .vscode/
-.ipynb_checkpoints/
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
 BPT/
 data/
+data2/
 stat/
+stat2/
 direction/
 *.png
 *.pdf

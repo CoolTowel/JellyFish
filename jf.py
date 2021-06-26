@@ -7,6 +7,7 @@ from astropy import units
 from astropy.cosmology import FlatLambdaCDM
 from astropy.table import Table
 from astropy.convolution import Gaussian2DKernel, interpolate_replace_nans
+from astropy.convolution import convolve
 
 cosmo = FlatLambdaCDM(H0=70, Om0=0.3, Tcmb0=2.725)
 
@@ -28,12 +29,17 @@ class Mymaps(Maps):
                       bintype=bintype, template=template, template_kin=template_kin)
         """plateifu"""
         self.id = plateifu
+
         """effective radius"""
         self.radii_mask = (self.spx_ellcoo_r_re.value > max_radii)
-        """the luminosity distance with a given redshift. In cm unit"""
+
+        """the luminosity distance with a given redshift. In cm"""
         self.lum_dis = cosmo.luminosity_distance(
-            self.nsa['z'])
-        lum_dis_cm = self.lum_dis.to_value(unit='cm')
+            self.nsa['z']).to_value(unit='cm')
+
+        """the angular diameter distance with a given redshift. In kpc/arcsec"""
+        self.ang_dis = cosmo.kpc_proper_per_arcmin(
+            self.nsa['z']).to_value(unit='kpc/arcsec')
 
         """Ha emission flux in 1e-17 erg/s/cm^2/spaxel"""
         ha = self.emline_gflux_ha_6564
@@ -54,17 +60,21 @@ class Mymaps(Maps):
         )
         hb_snr_mask = (hb.snr < min_snr) + hb_drpall_mask
         self.hb = np.ma.array(hb.value, mask=hb_snr_mask+self.radii_mask)
+
         # star formation rate
-        ext_factor = ((self.ha/self.hb)/2.8)**2.36  # extiction factor
+
+        self.ext_factor = ((self.ha/self.hb)/2.8)**2.36  # extiction factor
+
         """correct Ha emission flux 
         then convert into erg/s/spaxel
         then convert to SFR in M_Sun/year/spaxel
         """
-        self.sfr_map = (self.ha * ext_factor * 1e-17) * \
-            (4 * math.pi * (lum_dis_cm**2)) / (10**41.1) / 0.25
+        self.sfr_map = (self.ha * 10**(-17) * self.ext_factor) * \
+            (4 * math.pi * (self.lum_dis**2)) / (10**41.1)
+
+        self.ha_corr = self.ha * self.ext_factor
 
         """interpolate the missing data"""
-        self.interp = False
         if interp is True:
             self.interp = True
             holes = (self.radii_mask*1) + \
@@ -157,7 +167,7 @@ class Mymaps(Maps):
         #     t / snr_map))) / dic['trail_area']
         dic['lead_median'] = np.ma.median(l)
         dic['trail_median'] = np.ma.median(t)
-        dic['sfr'] = np.ma.sum(self.sfr_map * 0.25)
+        dic['sfr'] = np.ma.sum(self.sfr_map)
         dic['used_area'] = np.sum(1-image.mask)+0.0
         dic['total_area'] = np.sum(1-self.radii_mask)+0.0
         dic['pix_used_ratio'] = dic['used_area']/dic['total_area']
@@ -174,6 +184,17 @@ class Mymaps(Maps):
         else:
             return self._get_stat(image, angle)
 
+    def psf_m(self, fwhm=6):
+        # gaussian fwhm = 2 sqrt(2 ln 2) * sigma(stddev)
+        k = 2*np.sqrt(2*np.log(2))
+        sig = np.sqrt((fwhm/k/0.5)**2-(2.5/k/0.5)**2)
+        kernel = Gaussian2DKernel(x_stddev=sig)
+        sfr_match = self.ha_corr.data.copy()
+        sfr_match[self.ha_corr.mask] = np.nan
+        sfr_match = convolve(sfr_match, kernel)
+        sfr_match[self.ha_corr.mask] = np.nan
+        return sfr_match
+
 
 def stat_list(plateifu_list, angle_list=None, min_snr=3, max_radii=1.5):
     table = []
@@ -188,3 +209,46 @@ def stat_list(plateifu_list, angle_list=None, min_snr=3, max_radii=1.5):
                          max_radii=max_radii).stat(angle=angle))
     return Table(table)
 # def _sfr_noholes(self):
+
+
+def radibin(plateifu, min_snr=3, max_radii=1.5, interp=False):
+    gal = Mymaps(plateifu=plateifu,
+                 min_snr=min_snr, max_radii=max_radii, interp=interp)
+    if interp is True:
+        whole_map = gal.sfr_noholes.filled(
+            fill_value=0.0)/(0.5 * gal.ang_dis)**2  # transfer to sfr/kpc^2
+    else:
+        whole_map = gal.sfr_map.filled(
+            fill_value=0.0)/(0.5 * gal.ang_dis)**2  # transfer to sfr/kpc^2
+    mask = gal.sfr_map.mask
+    max_effradi = np.ma.max(np.ma.array(data=gal.spx_ellcoo_r_re.value, mask=mask), fill_value=0.0)
+    # s = np.sum((1.0-gal.radii_mask))
+    # r = np.sqrt(s/2/math.pi)
+    # bin_width = 1.5/(r-2)
+    i = 0.0
+    index = 0 
+    bin_r = []
+    radbin_med = []
+    radbin = []
+    indices = []
+    """center sfr"""
+    bin_r.append(0.0) 
+    center = np.unravel_index(
+        np.argmin(gal.spx_ellcoo_r_re.value), gal.spx_ellcoo_r_re.value.shape)
+    radbin_med.append(whole_map[center[0],center[1]])
+    indices.append(index)
+    """radial profile"""
+    bin_width = 0.2
+    while i < max_effradi:
+        index += 1
+        i += bin_width
+        mask = np.logical_and(gal.spx_ellcoo_r_re.value <= i,
+                              gal.spx_ellcoo_r_re.value > (i-bin_width))
+        bin_spaxels = whole_map[mask]
+        bin_spaxels = bin_spaxels[bin_spaxels != 0]
+        if bin_spaxels.size != 0:
+            med = np.median(bin_spaxels)
+            radbin_med.append(med)
+            indices.append(index)
+            
+    return radbin_med, indices
