@@ -1,13 +1,21 @@
 from marvin import config
 import math
 from marvin.tools.maps import Maps
+from marvin.tools.cube import Cube
+
 import numpy as np
 import matplotlib.pyplot as plt
+
 from astropy import units
 from astropy.cosmology import FlatLambdaCDM
 from astropy.table import Table
 from astropy.convolution import Gaussian2DKernel, interpolate_replace_nans
 from astropy.convolution import convolve
+from astropy.io import fits
+
+import mass_dens_mapext
+import mass_mapext
+import mass_sum
 
 cosmo = FlatLambdaCDM(H0=70, Om0=0.3, Tcmb0=2.725)
 
@@ -15,6 +23,10 @@ cosmo = FlatLambdaCDM(H0=70, Om0=0.3, Tcmb0=2.725)
 config.setRelease('DR16')
 config.setDR('DR16')
 
+# with fits.open('./data2/manga_firefly-v2_1_2-STELLARPOP.fits')as fin:
+#     firefly_plateifus = fin['GALAXY_INFO'].data['PLATEIFU']
+#     spaxel_binid = fin['SPAXEL_BINID'].data
+#     mstar_all = fin['SURFACE_MASS_DENSITY_VORONOI'].data
 
 class Mymaps(Maps):
     def __init__(self, min_snr=3, max_radii=1.5, interp=False,
@@ -148,13 +160,45 @@ class Mymaps(Maps):
             return self._get_lead_trail_asy(self.sfr_map, angle)
         else:
             return self._get_lead_trail_asy(image, angle)
+        
+    def get_mass_dens_map(self):
+        '''
+        get mass density map in mass/kpc^2
+        '''
+        massmap_all_data = mass_dens_mapext.get_massmap(self.id)
+        massmap = np.ma.array(data = massmap_all_data.data, mask = np.logical_or(massmap_all_data.mask, self.radii_mask))
+        return massmap
+    
+    # def get_mass_map(self):
+    #     massmap_all_data = mass_mapext.get_massmap(self.id)
+    #     massmap = np.ma.array(data = massmap_all_data.data, mask = np.logical_or(massmap_all_data.mask, self.radii_mask))
+    #     # massmap = massmap * (0.5 * self.ang_dis)**2
+    #     return massmap
+    # 
+    # def get_mass_map_fromdens(self):
+    #     '''
+    #     get mass density map in mass/spexal
+    #     '''
+    #     massmap = self.get_mass_dens_map()
+    #     massmap = np.log10(10**massmap * (0.5 * self.ang_dis)**2)
+    #     return massmap
+    
+    def get_mass(self):
+        massmap = self.get_mass_dens_map()
+        massmap = 10**massmap * (0.5 * self.ang_dis)**2
+        mass = np.log10(np.ma.sum(massmap))
+        return mass
 
+    def mass_dens_map_asy(self, angle=1):
+        return self._get_lead_trail_asy(self.get_mass_dens_map(), angle)
+        
     def _get_stat(self, image, angle):
         '''
         get statistic data of the leading and trailing side.
         '''
         dic = {}
         l, t, A = self._get_lead_trail_asy(image, angle)
+        l_mass, t_mass, A_mass = self.mass_dens_map_asy(angle)
         dic['plateifu'] = self.id
         dic['angle'] = angle
         dic['lead_area'] = np.sum(1-l.mask)+0.0
@@ -172,6 +216,16 @@ class Mymaps(Maps):
         dic['total_area'] = np.sum(1-self.radii_mask)+0.0
         dic['pix_used_ratio'] = dic['used_area']/dic['total_area']
         dic['asymmetry'] = A
+        dic['lead_mass_area'] = np.sum(1-l_mass.mask)+0.0
+        dic['trail_mass_area'] = np.sum(1-t_mass.mask)+0.0
+        dic['lead_mass_mean'] = np.ma.sum(l_mass) / dic['lead_mass_area']
+        dic['trail_mass_mean'] = np.ma.sum(t_mass) / dic['trail_mass_area']
+        dic['lead_mass_median'] = np.ma.median(l_mass)
+        dic['trail_mass_median'] = np.ma.median(t_mass)
+        dic['asymmetry_mass'] = A_mass
+        dic['stellar_mass'] = self.get_mass()
+        
+        
         return dic
 
     def stat(self, image=None, angle=1):
